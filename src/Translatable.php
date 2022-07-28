@@ -228,7 +228,9 @@ trait Translatable
         }
 
         foreach ($model->getRelations() as $relation => $item) {
-            $model->setRelation($relation, $this->{__FUNCTION__}(self::$transLocale, self::$fallbackLocale, $columns, $item));
+            if ($item !== null) {
+                $model->setRelation($relation, $this->{__FUNCTION__}(self::$transLocale, self::$fallbackLocale, $columns, $item));
+            }
         }
 
         return $model;
