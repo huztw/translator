@@ -2,6 +2,7 @@
 
 namespace Huztw\Translator;
 
+use Huztw\ModelSupport\ModelSupport;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
@@ -201,39 +202,25 @@ trait Translatable
      * @param  null|string $locale
      * @param  bool|string $fallbackLocale
      * @param  array|string $columns
-     * @param  \Illuminate\Database\Eloquent\Model|\Illuminate\Database\Eloquent\Collection|null $model
+     * @param  array|string $relations
      *
      * @return \Illuminate\Database\Eloquent\Model|\Illuminate\Support\Collection<TKey, TMapValue>|static<TKey, TMapValue>
      */
-    public function translated($locale = null, $fallbackLocale = true, $columns = ['*'], $model = null)
+    public function translated($locale = null, $fallbackLocale = true, $columns = ['*'], $relations = ['*'])
     {
         static::setTransLocale($locale, $fallbackLocale);
 
-        if ($model instanceof Collection) {
-            return $model->map(
-                fn($item) => $this->translated(self::$transLocale, self::$fallbackLocale, $columns, $item)
-            );
-        }
+        ModelSupport::transform($this, function ($model) use ($columns) {
+            if ($this->canTrans($model) && $model->getLocale() !== self::$transLocale) {
+                $translated = $model->translateByModel(self::$transLocale, self::$fallbackLocale, $columns);
 
-        if ($model === null) {
-            $model = $this;
-        } elseif (!$model instanceof Model || $model instanceof (Translator::translationModel())) {
-            return $model;
-        }
-
-        if ($this->canTrans($model) && $model->getLocale() !== self::$transLocale) {
-            $translated = $model->translateByModel(self::$transLocale, self::$fallbackLocale, $columns);
-
-            $model->translateByLang(self::$transLocale, self::$fallbackLocale, $columns, $translated);
-        }
-
-        foreach ($model->getRelations() as $relation => $item) {
-            if ($item !== null) {
-                $model->setRelation($relation, $this->{__FUNCTION__}(self::$transLocale, self::$fallbackLocale, $columns, $item));
+                $model->translateByLang(self::$transLocale, self::$fallbackLocale, $columns, $translated);
             }
-        }
 
-        return $model;
+            return $model;
+        }, $relations);
+
+        return $this;
     }
 
     /**
