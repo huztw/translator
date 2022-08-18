@@ -4,14 +4,13 @@ namespace Huztw\Translator;
 
 use Huztw\ModelSupport\ModelSupport;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Lang;
 use Illuminate\Support\Str;
 
 /**
- * @method static trans($locale = null, $fallback = true) 預載入翻譯至預載入關聯和當前模型
- * @method \Illuminate\Database\Eloquent\Collection|static[] translatedAll($locale = null, $fallback = true, $columns = ['*']) 執行"select"語句並且翻譯結果
+ * @method static trans(array|string|null $locale = null, string|bool $fallback = true) 預載入翻譯至預載入關聯和當前模型
+ * @method \Illuminate\Database\Eloquent\Collection|static[] translatedAll(string|null $locale = null, string|bool $fallback = true, array|string $columns = ['*'], array|string $relations = ['*']) 執行"select"語句並且翻譯結果
  */
 trait Translatable
 {
@@ -65,6 +64,34 @@ trait Translatable
     }
 
     /**
+     * 取得翻譯語言
+     *
+     * @return string
+     */
+    public static function transLocale()
+    {
+        if (is_null(self::$transLocale)) {
+            self::$transLocale = app()->getLocale();
+        }
+
+        return self::$transLocale;
+    }
+
+    /**
+     * 取得備用翻譯語言
+     *
+     * @return string
+     */
+    public static function fallbackLocale()
+    {
+        if (is_null(self::$fallbackLocale)) {
+            self::$fallbackLocale = config('app.fallback_locale');
+        }
+
+        return self::$fallbackLocale;
+    }
+
+    /**
      * 設定要翻譯語系
      *
      * @param null|string $locale
@@ -74,29 +101,40 @@ trait Translatable
      */
     public static function setTransLocale($locale = null, $fallbackLocale = true)
     {
-        self::$transLocale    = is_null($locale) ? app()->getLocale() : $locale;
-        self::$fallbackLocale = $fallbackLocale === true ? config('app.fallback_locale') : $fallbackLocale;
+        if (!is_null($locale)) {
+            self::$transLocale = $locale;
+        }
+
+        if ($fallbackLocale !== true) {
+            self::$fallbackLocale = $fallbackLocale;
+        }
     }
 
     /**
      * 翻譯模型
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param null|string $locale
-     * @param bool|string $fallbackLocale
+     * @param array|string|null $locale
+     * @param string|bool $fallbackLocale
      *
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeTrans($query, $locale = null, $fallbackLocale = true)
     {
         static::setTransLocale($locale, $fallbackLocale);
+        $transLocale    = $locale ?? self::transLocale();
+        $fallbackLocale = $fallbackLocale !== true ? $fallbackLocale : self::fallbackLocale();
 
-        $callback = function ($query) {
-            $query->where(function ($q) {
-                $q->where('locale', self::$transLocale);
+        $callback = function ($query) use ($transLocale, $fallbackLocale) {
+            $query->where(function ($q) use ($transLocale, $fallbackLocale) {
+                if (is_array($transLocale)) {
+                    $q->whereIn('locale', $transLocale);
+                } else {
+                    $q->where('locale', $transLocale);
+                }
 
-                if (self::$fallbackLocale && self::$transLocale != self::$fallbackLocale) {
-                    $q->orWhere('locale', self::$fallbackLocale);
+                if ($fallbackLocale && $transLocale != $fallbackLocale) {
+                    $q->orWhere('locale', $fallbackLocale);
                 }
             })->select([
                 'id',
@@ -128,20 +166,16 @@ trait Translatable
     /**
      * 執行"select"語句並且翻譯結果
      *
-     * @param  null|string $locale
-     * @param  bool|string $fallbackLocale
-     * @param  array|string  $columns
+     * @param  string|null $locale
+     * @param  string|bool $fallbackLocale
+     * @param  array|string $columns
+     * @param  array|string $relations
      * @return \Illuminate\Database\Eloquent\Collection|static[]
      */
-    public function scopeTranslatedAll($query, $locale = null, $fallbackLocale = true, $columns = ['*'])
+    public function scopeTranslatedAll($query, $locale = null, $fallbackLocale = true, $columns = ['*'], $relations = ['*'])
     {
-        if ($locale === null && self::$transLocale !== null) {
-            $locale         = self::$transLocale;
-            $fallbackLocale = self::$fallbackLocale;
-        }
-
         return $query->get()->map(
-            fn($model) => $model->translated($locale, $fallbackLocale, $columns, $model)
+            fn($model) => $model->translated($locale, $fallbackLocale, $columns, $relations)
         );
     }
 
@@ -211,10 +245,13 @@ trait Translatable
         static::setTransLocale($locale, $fallbackLocale);
 
         ModelSupport::transform($this, function ($model) use ($columns) {
-            if ($this->canTrans($model) && $model->getLocale() !== self::$transLocale) {
-                $translated = $model->translateByModel(self::$transLocale, self::$fallbackLocale, $columns);
+            $transLocale    = self::transLocale();
+            $fallbackLocale = self::fallbackLocale();
 
-                $model->translateByLang(self::$transLocale, self::$fallbackLocale, $columns, $translated);
+            if ($this->canTrans($model) && $model->getLocale() !== $transLocale) {
+                $translated = $model->translateByModel($transLocale, $fallbackLocale, $columns);
+
+                $model->translateByLang($transLocale, $fallbackLocale, $columns, $translated);
             }
 
             return $model;
@@ -235,18 +272,20 @@ trait Translatable
     public function translateByModel($locale = null, $fallbackLocale = true, $columns = ['*'])
     {
         static::setTransLocale($locale, $fallbackLocale);
+        $transLocale    = self::transLocale();
+        $fallbackLocale = self::fallbackLocale();
 
         $translated = [];
 
-        $attributes = $this->attributes;
+        $attributes = $this->original;
 
         $this->translations
-            ->whereIn('locale', [self::$transLocale, self::$fallbackLocale])
-            ->each(function ($translation) use (&$translated, &$attributes, $columns) {
+            ->whereIn('locale', [$transLocale, $fallbackLocale])
+            ->each(function ($translation) use (&$translated, &$attributes, $transLocale, $fallbackLocale, $columns) {
                 $translatedKey = $translation->translated_key;
 
                 if (
-                    (self::$transLocale != $translation->locale && self::$fallbackLocale != $translation->locale)
+                    ($transLocale != $translation->locale && $fallbackLocale != $translation->locale)
                     || array_key_exists($translatedKey, $translated)
                 ) {
                     return true;
@@ -279,19 +318,21 @@ trait Translatable
     public function translateByLang($locale = null, $fallbackLocale = true, $columns = ['*'], $ignore = [])
     {
         static::setTransLocale($locale, $fallbackLocale);
+        $transLocale    = self::transLocale();
+        $fallbackLocale = self::fallbackLocale();
 
         $translated = [];
 
-        $attributes = collect($this->attributes)->map(function ($value, $key) use (&$translated, $columns, $ignore) {
+        $attributes = collect($this->attributes)->map(function ($value, $key) use (&$translated, $transLocale, $fallbackLocale, $columns, $ignore) {
             if (!in_array($key, $ignore) && static::canTransColumn($this, $columns, $key)) {
-                if (Lang::has($value, self::$transLocale)) {
-                    return tap(Lang::get($value, [], self::$transLocale), function () use (&$translated, $key) {
+                if (Lang::has($value, $transLocale)) {
+                    return tap(Lang::get($value, [], $transLocale), function () use (&$translated, $key) {
                         array_push($translated, $key);
                     });
                 }
 
-                if (Lang::has($value, self::$fallbackLocale)) {
-                    return tap(Lang::get($value, [], self::$fallbackLocale), function () use (&$translated, $key) {
+                if (Lang::has($value, $fallbackLocale)) {
+                    return tap(Lang::get($value, [], $fallbackLocale), function () use (&$translated, $key) {
                         array_push($translated, $key);
                     });
                 }
